@@ -1,0 +1,18 @@
+{
+  "buildCommand": "pip install -r requirements.txt",
+  "devCommand": "uvicorn app.main:app --reload",
+  "installCommand": "pip install -r requirements.txt",
+  "framework": null,
+  "functions": {
+    "app/main.py": {
+      "maxDuration": 30
+    }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "app/main.py"
+    }
+  ],
+  "pythonVersion": "3.11"
+}

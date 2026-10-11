@@ -1,0 +1,136 @@
+{
+  "name": "Code Review on PR",
+  "description": "Trigger AI code review when a GitHub PR is opened or updated",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "code-review",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "GitHub Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const payload = items[0].json;\n\n// Only process PR opened/updated events\nif (!['opened', 'synchronize', 'reopened'].includes(payload.action)) {\n  return [];\n}\n\nconst pr = payload.pull_request;\nconst repo = payload.repository;\n\nreturn [{\n  json: {\n    pr_number: pr.number,\n    pr_title: pr.title,\n    pr_body: pr.body || '',\n    repo_full_name: repo.full_name,\n    repo_url: repo.html_url,\n    head_sha: pr.head.sha,\n    base_sha: pr.base.sha,\n    files_url: `https://api.github.com/repos/${repo.full_name}/pulls/${pr.number}/files`,\n    diff_url: `https://github.com/${repo.full_name}/pull/${pr.number}.diff`\n  }\n}];"
+      },
+      "id": "filter",
+      "name": "Filter PR Events",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/repos/{{$json.repo_full_name}}/pulls/{{$json.pr_number}}/files",
+        "method": "GET",
+        "options": {
+          "headers": {
+            "Authorization": "Bearer {{$credentials.githubApi}}",
+            "Accept": "application/vnd.github.v3+json"
+          }
+        }
+      },
+      "id": "fetchFiles",
+      "name": "Fetch PR Files",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [750, 300],
+      "credentials": {
+        "httpHeaderAuth": "githubApi"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const files = items[0].json;\n\n// Filter to code files only\nconst codeFiles = files.filter(f => \n  ['.py', '.js', '.ts', '.jsx', '.tsx', '.go', '.rs', '.java', '.cpp', '.c', '.h'].some(ext => f.filename.endsWith(ext))\n);\n\n// Limit to 10 files to avoid token limits\nconst limitedFiles = codeFiles.slice(0, 10);\n\nreturn limitedFiles.map(f => ({\n  json: {\n    filename: f.filename,\n    patch: f.patch || '',\n    status: f.status,\n    additions: f.additions,\n    deletions: f.deletions\n  }\n}));"
+      },
+      "id": "processFiles",
+      "name": "Process Files",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/api/v1/agents/code-review",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {
+          "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{$credentials.apiToken}}"
+          }
+        },
+        "bodyParametersJson": "={ \"code\": $json.patch, \"language\": $json.filename.split('.').pop() || 'python', \"focus_areas\": [\"security\", \"performance\", \"maintainability\", \"best_practices\"] }"
+      },
+      "id": "codeReview",
+      "name": "AI Code Review",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [1250, 300],
+      "credentials": {
+        "httpHeaderAuth": "apiToken"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const reviews = items.map(item => ({\n  path: item.json.filename,\n  position: 1,\n  body: item.json.report || item.json.security || item.json.analysis || 'No issues found',\n  line: 1\n}));\n\nreturn [{\n  json: {\n    reviews\n  }\n}];"
+      },
+      "id": "formatReviews",
+      "name": "Format Reviews",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/repos/{{$json.repo_full_name}}/pulls/{{$json.pr_number}}/comments",
+        "method": "POST",
+        "options": {
+          "headers": {
+            "Authorization": "Bearer {{$credentials.githubApi}}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json"
+          }
+        },
+        "jsonParameters": true,
+        "bodyParametersJson": "={ \"body\": $json.reviews.map(r => `## ${r.path}\\n\\n${r.body}`).join('\\n---\\n') }"
+      },
+      "id": "postReview",
+      "name": "Post Review Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [1750, 300],
+      "credentials": {
+        "httpHeaderAuth": "githubApi"
+      }
+    }
+  ],
+  "connections": {
+    "GitHub Webhook": {
+      "main": [["Filter PR Events"]]
+    },
+    "Filter PR Events": {
+      "main": [["Fetch PR Files"]]
+    },
+    "Fetch PR Files": {
+      "main": [["Process Files"]]
+    },
+    "Process Files": {
+      "main": [["AI Code Review"]]
+    },
+    "AI Code Review": {
+      "main": [["Format Reviews"]]
+    },
+    "Format Reviews": {
+      "main": [["Post Review Comments"]]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "id": "1"
+}

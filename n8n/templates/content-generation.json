@@ -1,0 +1,139 @@
+{
+  "name": "Content Generation Pipeline",
+  "description": "Generate blog posts, documentation, or marketing content using AI agents",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-content",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Content Request Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const payload = items[0].json;\n\nconst contentType = payload.type || 'blog';\nconst topic = payload.topic;\nconst outline = payload.outline || [];\nconst targetAudience = payload.audience || 'developers';\nconst tone = payload.tone || 'technical';\nconst length = payload.length || 'medium';\n\nif (!topic) {\n  throw new Error('Topic is required');\n}\n\nreturn [{\n  json: {\n    type: contentType,\n    topic,\n    outline,\n    targetAudience,\n    tone,\n    length,\n    keywords: payload.keywords || [],\n    referenceDocs: payload.referenceDocs || []\n  }\n}];"
+      },
+      "id": "validate",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/api/v1/documents/search",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {
+          "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{$credentials.apiToken}}"
+          }
+        },
+        "bodyParametersJson": "={ \"query\": $json.topic, \"n_results\": 5 }"
+      },
+      "id": "searchDocs",
+      "name": "Search Reference Docs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [750, 200],
+      "credentials": {
+        "httpHeaderAuth": "apiToken"
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/api/v1/agents/run",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {
+          "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{$credentials.apiToken}}"
+          }
+        },
+        "bodyParametersJson": "={\n  \"prompt\": \"Write a {{$json.type}} post about: {{$json.topic}}\\n\\nTarget audience: {{$json.targetAudience}}\\nTone: {{$json.tone}}\\nLength: {{$json.length}}\\n\\nOutline:\\n{{$json.outline.map((item, i) => `${i+1}. ${item}`).join('\\n')}}\\n\\nKeywords to include: {{$json.keywords.join(', ')}}\\n\\nReference materials:\\n{{$json.referenceDocs.map(d => `- ${d.content.substring(0, 200)}...`).join('\\n')}}\",\n  \"agent_type\": \"writing\",\n  \"context\": {\n    \"type\": \"{{$json.type}}\",\n    \"topic\": \"{{$json.topic}}\",\n    \"audience\": \"{{$json.targetAudience}}\"\n  },\n  \"max_iterations\": 8\n}"
+      },
+      "id": "writingAgent",
+      "name": "Writing Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [1000, 300],
+      "credentials": {
+        "httpHeaderAuth": "apiToken"
+      }
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/api/v1/agents/run",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {
+          "headers": {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{$credentials.apiToken}}"
+          }
+        },
+        "bodyParametersJson": "={\n  \"prompt\": \"Review and improve this content for clarity, accuracy, and engagement:\\n\\n{{$json.response || $json.messages[$json.messages.length - 1].content}}\\n\\nCheck for:\\n1. Technical accuracy\\n2. Clear structure and flow\\n3. Appropriate tone for {{$json.targetAudience}}\\n4. SEO optimization with keywords: {{$json.keywords.join(', ')}}\\n5. Actionable takeaways\",\n  \"agent_type\": \"writing\",\n  \"context\": {\n    \"review\": true,\n    \"original_topic\": \"{{$json.topic}}\"\n  },\n  \"max_iterations\": 5\n}"
+      },
+      "id": "reviewAgent",
+      "name": "Review & Polish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 2,
+      "position": [1250, 300],
+      "credentials": {
+        "httpHeaderAuth": "apiToken"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const result = items[0].json;\n\n// Extract final content from agent response\nlet content = '';\nif (result.response) {\n  content = result.response;\n} else if (result.messages && result.messages.length > 0) {\n  const lastMsg = result.messages[result.messages.length - 1];\n  content = lastMsg.content || '';\n}\n\n// Generate SEO metadata\nconst seoTitle = content.split('\\n')[0].replace(/^#\\s*/, '').substring(0, 60);\nconst seoDescription = content.substring(0, 160).replace(/[#*_`]/g, '').trim() + '...';\n\nreturn [{\n  json: {\n    content,\n    seo: {\n      title: seoTitle,\n      description: seoDescription,\n      keywords: items[0].json.keywords || []\n    },\n    meta: {\n      generatedAt: new Date().toISOString(),\n      topic: items[0].json.topic,\n      type: items[0].json.type\n    }\n  }\n}];"
+      },
+      "id": "finalize",
+      "name": "Finalize Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const output = items[0].json;\n\nreturn [{\n  json: {\n    success: true,\n    content: output.content,\n    seo: output.seo,\n    meta: output.meta,\n    // Ready for CMS integration\n    cmsReady: {\n      title: output.seo.title,\n      body: output.content,\n      excerpt: output.seo.description,\n      tags: output.seo.keywords,\n      status: 'draft'\n    }\n  }\n}];"
+      },
+      "id": "response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1750, 300]
+    }
+  ],
+  "connections": {
+    "Content Request Webhook": {
+      "main": [["Validate Request"]]
+    },
+    "Validate Request": {
+      "main": [
+        ["Search Reference Docs", "Writing Agent"]
+      ]
+    },
+    "Search Reference Docs": {
+      "main": [["Writing Agent"]]
+    },
+    "Writing Agent": {
+      "main": [["Review & Polish"]]
+    },
+    "Review & Polish": {
+      "main": [["Finalize Output"]]
+    },
+    "Finalize Output": {
+      "main": [["Format Response"]]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "id": "2"
+}
